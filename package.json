@@ -10,6 +10,17 @@
     "format": "prettier --write .",
     "type-check": "tsc --noEmit"
   },
+  "build": {
+    "env": {
+      "NEXT_PUBLIC_SITE_URL": "@NEXT_PUBLIC_SITE_URL"
+    }
+  },
+  "vercel": {
+    "buildCommand": "npm run build",
+    "outputDirectory": ".next",
+    "installCommand": "npm install",
+    "framework": "nextjs"
+  },
   "dependencies": {
     "next": "14.0.4",
     "react": "18.2.0",
