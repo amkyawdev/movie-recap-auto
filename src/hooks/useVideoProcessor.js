@@ -8,7 +8,7 @@ export function useVideoProcessor() {
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
 
-  const processVideo = async (url) => {
+  const processVideo = async (url, targetLanguage = 'Myanmar') => {
     setIsProcessing(true);
     setProgress(0);
     setStatus('Initializing...');
@@ -17,33 +17,46 @@ export function useVideoProcessor() {
 
     try {
       setStatus('Extracting subtitles...');
-      setProgress(20);
+      setProgress(10);
 
-      const extractResponse = await axios.post('/api/extract-subtitles', { videoUrl: url });
+      const extractResponse = await axios.post('/api/extract-subtitles', { 
+        videoUrl: url,
+        targetLanguage 
+      });
       
       if (!extractResponse.data.success) {
         throw new Error(extractResponse.data.error || 'Failed to extract subtitles');
       }
 
-      setStatus('Translating to Myanmar...');
-      setProgress(50);
+      setStatus('Translating subtitles...');
+      setProgress(40);
+
+      // Small delay to show translation progress
+      await new Promise(resolve => setTimeout(resolve, 500));
 
       setStatus('Generating voiceover...');
-      setProgress(70);
+      setProgress(60);
 
       const ttsResponse = await axios.post('/api/convert-to-speech', {
         srtContent: extractResponse.data.srt,
         voice: 'alloy',
+        targetLanguage,
       });
 
       setProgress(90);
       setStatus('Finalizing...');
 
-      // Create audio URL from response if audio data exists
+      // Create audio URL from base64 response
       let audioUrl = null;
-      if (ttsResponse.data.audio && ttsResponse.data.audio.length > 0) {
-        const audioBlob = new Blob([new Uint8Array(ttsResponse.data.audio)], { type: 'audio/mpeg' });
-        audioUrl = URL.createObjectURL(audioBlob);
+      if (ttsResponse.data.audio && ttsResponse.data.hasAudio) {
+        try {
+          // Convert base64 to Blob
+          const response = await fetch(`data:audio/mp3;base64,${ttsResponse.data.audio}`);
+          const blob = await response.blob();
+          audioUrl = URL.createObjectURL(blob);
+        } catch (e) {
+          console.log('Audio creation failed:', e);
+        }
       }
 
       setProgress(100);
@@ -51,9 +64,13 @@ export function useVideoProcessor() {
 
       setResults({
         srt: extractResponse.data.srt,
+        originalSrt: extractResponse.data.originalSrt,
         audio: audioUrl,
+        hasAudio: ttsResponse.data.hasAudio,
         platform: extractResponse.data.platform,
         subtitleCount: extractResponse.data.subtitleCount,
+        videoId: extractResponse.data.videoId,
+        message: ttsResponse.data.message,
       });
 
       return results;
