@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 export async function POST(request) {
   try {
-    const { videoUrl, targetLanguage = 'Myanmar' } = await request.json();
+    const { videoUrl, targetLanguage = 'English', translate = false } = await request.json();
 
     if (!videoUrl) {
       return NextResponse.json(
@@ -29,21 +29,22 @@ export async function POST(request) {
     // TikTok
     else if (videoUrl.includes('tiktok.com')) {
       platform = 'tiktok';
-      // Extract video ID from TikTok URL
       const match = videoUrl.match(/video\/(\d+)/);
       videoId = match ? match[1] : videoUrl.split('/').pop().split('?')[0];
       
       subtitles = await fetchTikTokCaptions(videoUrl);
     }
 
-    // If no captions, use mock data for demo
+    // If no captions found, return error
     if (subtitles.length === 0) {
-      subtitles = [
-        { start: 0, end: 3, text: 'Welcome to this video' },
-        { start: 3, end: 6, text: 'Today we will learn about AI' },
-        { start: 6, end: 9, text: 'This is a demo subtitle' },
-        { start: 9, end: 12, text: 'Thank you for watching' },
-      ];
+      return NextResponse.json({
+        success: false,
+        error: platform === 'youtube' 
+          ? 'No captions available for this YouTube video. Make sure the video has captions/subtitles enabled.'
+          : 'No captions available for this video.',
+        platform,
+        videoId,
+      });
     }
 
     // Convert to SRT format
@@ -53,11 +54,12 @@ ${formatTime(sub.start)} --> ${formatTime(sub.end)}
 ${sub.text}`;
     }).join('\n\n');
 
-    // Translate to target language using OpenRouter
-    let translatedSrt = srt;
-    if (targetLanguage !== 'English' && process.env.OPENROUTER_API_KEY) {
+    // Translate if requested and not already English
+    let finalSrt = srt;
+    if (translate && targetLanguage !== 'English' && process.env.OPENROUTER_API_KEY) {
       try {
-        translatedSrt = await translateSRT(srt, targetLanguage, process.env.OPENROUTER_API_KEY);
+        setStatus('Translating...');
+        finalSrt = await translateSRT(srt, targetLanguage, process.env.OPENROUTER_API_KEY);
       } catch (e) {
         console.log('Translation failed, using original');
       }
@@ -65,11 +67,12 @@ ${sub.text}`;
 
     return NextResponse.json({
       success: true,
-      srt: translatedSrt,
+      srt: finalSrt,
       originalSrt: srt,
       platform,
       subtitleCount: subtitles.length,
       videoId,
+      message: 'Subtitles extracted successfully',
     });
   } catch (error) {
     return NextResponse.json(
@@ -79,78 +82,129 @@ ${sub.text}`;
   }
 }
 
-// YouTube captions fetcher
+// YouTube captions fetcher - multiple methods
 async function fetchYouTubeCaptions(videoId) {
   const subtitles = [];
   
+  // Method 1: Try srv1 format (timedtext API)
   try {
-    // Try YouTube transcript API
     const response = await fetch(
-      `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&fmt=srv1`
+      `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&fmt=srv1`,
+      { signal: AbortSignal.timeout(5000) }
     );
     
     if (response.ok) {
       const xml = await response.text();
-      const parsed = parseYouTubeCaptions(xml);
+      const parsed = parseYouTubeCaptionsSRV1(xml);
       if (parsed.length > 0) return parsed;
     }
-    
-    // Try alternative approach with noembed
-    const noembedResponse = await fetch(
-      `https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`
+  } catch (e) {
+    console.log('SRV1 fetch failed:', e.message);
+  }
+
+  // Method 2: Try vtt format
+  try {
+    const response = await fetch(
+      `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&fmt=vtt`,
+      { signal: AbortSignal.timeout(5000) }
     );
     
-    if (noembedResponse.ok) {
-      const data = await noembedResponse.json();
-      // If video exists, return empty to use mock data
-      if (data.title) {
-        console.log('YouTube video found:', data.title);
-      }
+    if (response.ok) {
+      const vtt = await response.text();
+      const parsed = parseYouTubeCaptionsVTT(vtt);
+      if (parsed.length > 0) return parsed;
     }
   } catch (e) {
-    console.log('YouTube caption fetch error:', e.message);
+    console.log('VTT fetch failed:', e.message);
+  }
+
+  // Method 3: Try without lang parameter
+  try {
+    const response = await fetch(
+      `https://www.youtube.com/api/timedtext?v=${videoId}&fmt=srv1`,
+      { signal: AbortSignal.timeout(5000) }
+    );
+    
+    if (response.ok) {
+      const xml = await response.text();
+      const parsed = parseYouTubeCaptionsSRV1(xml);
+      if (parsed.length > 0) return parsed;
+    }
+  } catch (e) {
+    console.log('No-lang fetch failed:', e.message);
+  }
+  
+  return subtitles;
+}
+
+// Parse YouTube SRV1 format
+function parseYouTubeCaptionsSRV1(xml) {
+  const subtitles = [];
+  if (!xml || xml.includes('<?xml') === false) return subtitles;
+  
+  const regex = /<p begin="([\d.]+)".*?dur="([\d.]+)".*?>(.*?)<\/p>/gs;
+  let match;
+  
+  while ((match = regex.exec(xml)) !== null) {
+    const start = parseFloat(match[1]);
+    const duration = parseFloat(match[2]) || 3;
+    const text = match[3].replace(/<[^>]+>/g, '').trim();
+    
+    if (text) {
+      subtitles.push({
+        start,
+        end: start + duration,
+        text
+      });
+    }
+  }
+  
+  return subtitles;
+}
+
+// Parse YouTube VTT format
+function parseYouTubeCaptionsVTT(vtt) {
+  const subtitles = [];
+  if (!vtt || !vtt.includes('WEBVTT')) return subtitles;
+  
+  const lines = vtt.split('\n');
+  let currentStart = 0;
+  let currentEnd = 0;
+  let currentText = '';
+  
+  for (const line of lines) {
+    const timeMatch = line.match(/(\d{2}):(\d{2}):(\d{2})\.(\d{3}) --> (\d{2}):(\d{2}):(\d{2})\.(\d{3})/);
+    
+    if (timeMatch) {
+      currentStart = parseInt(timeMatch[1]) * 3600 + parseInt(timeMatch[2]) * 60 + parseInt(timeMatch[3]) + parseInt(timeMatch[4]) / 1000;
+      currentEnd = parseInt(timeMatch[5]) * 3600 + parseInt(timeMatch[6]) * 60 + parseInt(timeMatch[7]) + parseInt(timeMatch[8]) / 1000;
+      currentText = '';
+    } else if (line.trim() && !line.includes('WEBVTT') && !line.includes('NOTE')) {
+      currentText += (currentText ? '\n' : '') + line.trim();
+      
+      // Next line or empty line means end of this caption
+      const idx = lines.indexOf(line);
+      if (idx === lines.length - 1 || (lines[idx + 1] && !lines[idx + 1].includes('-->') && lines[idx + 1].trim() === '')) {
+        if (currentText) {
+          subtitles.push({
+            start: currentStart,
+            end: currentEnd,
+            text: currentText
+          });
+        }
+      }
+    }
   }
   
   return subtitles;
 }
 
 // TikTok captions fetcher
-async function fetchTikTokCaptions(videoUrl) {
-  const subtitles = [];
-  
-  try {
-    // TikTok video info API (mock for demo)
-    // In production, use TikTok's internal API or third-party scraper
-    const videoId = videoUrl.match(/video\/(\d+)/)?.[1] || 'unknown';
-    
-    console.log('Fetching TikTok video:', videoId);
-    
-    // Return empty to use mock data for demo
-    // Real implementation would need TikTok API or scraper
-  } catch (e) {
-    console.log('TikTok caption fetch error:', e.message);
-  }
-  
-  return subtitles;
-}
-
-function parseYouTubeCaptions(xml) {
-  const subtitles = [];
-  const regex = /<p begin="([\d.]+)".*?>(.*?)<\/p>/g;
-  let match;
-  
-  while ((match = regex.exec(xml)) !== null) {
-    const start = parseFloat(match[1]);
-    const text = match[2].replace(/<[^>]+>/g, '').trim();
-    const duration = 3;
-    const end = start + duration;
-    
-    if (text) {
-      subtitles.push({ start, end, text });
-    }
-  }
-  
-  return subtitles;
+async function fetchTikTokCaptions(videoId) {
+  // TikTok doesn't have a public captions API
+  // This would require third-party scraping which is not reliable
+  console.log('TikTok captions not available via public API');
+  return [];
 }
 
 function formatTime(seconds) {

@@ -8,7 +8,9 @@ export function useVideoProcessor() {
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
 
-  const processVideo = async (url, targetLanguage = 'Myanmar') => {
+  const processVideo = async (url, options = {}) => {
+    const { translate = false, targetLanguage = 'Myanmar', voice = 'alloy' } = options;
+    
     setIsProcessing(true);
     setProgress(0);
     setStatus('Initializing...');
@@ -21,27 +23,35 @@ export function useVideoProcessor() {
 
       const extractResponse = await axios.post('/api/extract-subtitles', { 
         videoUrl: url,
+        translate,
         targetLanguage 
       });
       
       if (!extractResponse.data.success) {
-        throw new Error(extractResponse.data.error || 'Failed to extract subtitles');
+        setError(extractResponse.data.error || 'Failed to extract subtitles');
+        setIsProcessing(false);
+        return null;
       }
 
-      setStatus('Translating subtitles...');
-      setProgress(40);
-
-      // Small delay to show translation progress
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      setStatus('Generating voiceover...');
+      // Show original subtitles immediately
       setProgress(60);
+      setStatus('Subtitles extracted!');
 
-      const ttsResponse = await axios.post('/api/convert-to-speech', {
-        srtContent: extractResponse.data.srt,
-        voice: 'alloy',
-        targetLanguage,
-      });
+      // Generate TTS if available
+      setStatus('Generating voiceover...');
+      setProgress(70);
+
+      let ttsResponse;
+      try {
+        ttsResponse = await axios.post('/api/convert-to-speech', {
+          srtContent: extractResponse.data.srt,
+          voice: voice,
+          targetLanguage,
+        });
+      } catch (ttsError) {
+        console.log('TTS generation skipped:', ttsError.message);
+        ttsResponse = { data: { audio: '', hasAudio: false, message: 'TTS not available' } };
+      }
 
       setProgress(90);
       setStatus('Finalizing...');
@@ -50,7 +60,6 @@ export function useVideoProcessor() {
       let audioUrl = null;
       if (ttsResponse.data.audio && ttsResponse.data.hasAudio) {
         try {
-          // Convert base64 to Blob
           const response = await fetch(`data:audio/mp3;base64,${ttsResponse.data.audio}`);
           const blob = await response.blob();
           audioUrl = URL.createObjectURL(blob);
@@ -70,13 +79,14 @@ export function useVideoProcessor() {
         platform: extractResponse.data.platform,
         subtitleCount: extractResponse.data.subtitleCount,
         videoId: extractResponse.data.videoId,
-        message: ttsResponse.data.message,
+        message: ttsResponse.data.message || extractResponse.data.message,
       });
 
       return results;
     } catch (err) {
-      setError(err.message || 'Something went wrong');
-      setStatus('Error: ' + err.message);
+      const errorMsg = err.response?.data?.error || err.message || 'Something went wrong';
+      setError(errorMsg);
+      setStatus('Error');
       throw err;
     } finally {
       setIsProcessing(false);
