@@ -13,11 +13,12 @@ export async function POST(request) {
 
     // Placeholder for actual TTS generation logic
     // In production, this would call OpenRouter API or other TTS services
-    const mockAudio = new ArrayBuffer(0);
+    // Return empty audio data - actual TTS needs API integration
+    const mockAudio = new Uint8Array(0);
 
     return NextResponse.json({
       success: true,
-      audio: mockAudio,
+      audio: Array.from(mockAudio),
       voice,
       message: 'TTS generation would happen here with OpenRouter API',
     });

@@ -39,16 +39,19 @@ export function useVideoProcessor() {
       setProgress(90);
       setStatus('Finalizing...');
 
-      const audioBlob = new Blob(ttsResponse.data.audio, { type: 'audio/mpeg' });
-      const audioUrl = URL.createObjectURL(audioBlob);
+      // Create audio URL from response if audio data exists
+      let audioUrl = null;
+      if (ttsResponse.data.audio && ttsResponse.data.audio.length > 0) {
+        const audioBlob = new Blob([new Uint8Array(ttsResponse.data.audio)], { type: 'audio/mpeg' });
+        audioUrl = URL.createObjectURL(audioBlob);
+      }
 
       setProgress(100);
       setStatus('Done!');
 
       setResults({
         srt: extractResponse.data.srt,
-        audio: ttsResponse.data.audio,
-        audioUrl,
+        audio: audioUrl,
         platform: extractResponse.data.platform,
         subtitleCount: extractResponse.data.subtitleCount,
       });
