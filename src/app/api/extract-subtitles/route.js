@@ -1,5 +1,15 @@
 import { NextResponse } from 'next/server';
 
+// Dynamic import to handle ES modules
+async function getYouTubeCaptions() {
+  try {
+    const module = await import('youtube-captions-scraper');
+    return module.default || module;
+  } catch (e) {
+    return null;
+  }
+}
+
 export async function POST(request) {
   try {
     const { videoUrl, targetLanguage = 'Myanmar' } = await request.json();
@@ -35,14 +45,62 @@ export async function POST(request) {
       });
     }
 
-    // Return success - we don't need captions/subtitles
-    // STT will transcribe from the video audio
+    // Extract subtitles for YouTube
+    if (platform === 'youtube' && extractedVideoId) {
+      try {
+        const scraper = await getYouTubeCaptions();
+        
+        if (scraper && scraper.getSubtitles) {
+          // Try to get English subtitles first
+          let subtitles = [];
+          try {
+            const englishSubs = await scraper.getSubtitles({
+              videoID: extractedVideoId,
+              lang: 'en'
+            });
+            subtitles = englishSubs;
+          } catch (e) {
+            // Try auto-generated subtitles
+            try {
+              const autoSubs = await scraper.getSubtitles({
+                videoID: extractedVideoId,
+                lang: 'a.en'
+              });
+              subtitles = autoSubs;
+            } catch (e2) {
+              // No subtitles available
+            }
+          }
+
+          if (subtitles && subtitles.length > 0) {
+            return NextResponse.json({
+              success: true,
+              platform,
+              videoId: extractedVideoId,
+              subtitles: subtitles.map(sub => ({
+                text: sub.text,
+                start: sub.start,
+                duration: sub.dur || 3,
+              })),
+              originalLanguage: 'en',
+              message: 'Subtitles extracted successfully',
+            });
+          }
+        }
+      } catch (e) {
+        console.log('YouTube caption extraction error:', e.message);
+      }
+    }
+
+    // If no subtitles found or TikTok, return empty subtitles array
+    // The dashboard will use Whisper for speech-to-text instead
     return NextResponse.json({
       success: true,
       platform,
       videoId: extractedVideoId,
-      message: 'Video URL valid - ready for Speech-to-Text processing',
-      instruction: 'The system will extract audio from the video and use AI to transcribe the speech',
+      subtitles: [],
+      message: 'No subtitles available. Will use speech-to-text instead.',
+      useSpeechToText: true,
     });
   } catch (error) {
     return NextResponse.json(

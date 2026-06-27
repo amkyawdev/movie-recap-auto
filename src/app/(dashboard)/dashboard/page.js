@@ -2,78 +2,128 @@
 
 import { useState, useRef } from 'react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { LoadingAnimation, WaveProgress } from '@/components/shared/LoadingAnimation';
-import { Download, Volume2, Languages, Mic, Upload } from 'lucide-react';
+import { Download, Volume2, Languages, Mic, Link, Play, AlertCircle } from 'lucide-react';
 import axios from 'axios';
 
 export default function DashboardPage() {
-  const [audioFile, setAudioFile] = useState(null);
+  const [videoUrl, setVideoUrl] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState('');
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
-  const fileInputRef = useRef(null);
 
-  const handleAudioUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const isValidUrl = (url) => {
+    return url.includes('youtube.com') || url.includes('youtu.be') || url.includes('tiktok.com');
+  };
+
+  const handleProcessVideo = async () => {
+    if (!videoUrl.trim()) {
+      setError('Please enter a YouTube or TikTok URL');
+      return;
+    }
     
-    setAudioFile(file);
+    if (!isValidUrl(videoUrl)) {
+      setError('Please enter a valid YouTube or TikTok URL');
+      return;
+    }
+
     setIsProcessing(true);
     setProgress(0);
-    setStatus('Processing audio file...');
+    setStatus('Starting video processing...');
     setError(null);
 
     try {
-      // Step 1: Upload and transcribe with Whisper
+      // Step 1: Extract subtitles from video URL
       setProgress(10);
-      setStatus('Uploading audio...');
+      setStatus('Extracting subtitles from video...');
 
-      const formData = new FormData();
-      formData.append('audio', file);
-
-      setStatus('Transcribing audio with AI...');
-      setProgress(20);
-
-      const transcriptResponse = await axios.post('/api/whisper', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
+      const subtitleResponse = await axios.post('/api/extract-subtitles', {
+        url: videoUrl,
       });
 
-      if (!transcriptResponse.data.success) {
-        throw new Error(transcriptResponse.data.error || 'Transcription failed');
+      if (!subtitleResponse.data.success) {
+        throw new Error(subtitleResponse.data.error || 'Subtitle extraction failed');
       }
 
+      const { subtitles, originalLanguage } = subtitleResponse.data;
       setProgress(40);
+      setStatus('Transcribing to text...');
+
+      // Step 2: Transcribe (if no subtitles available, use Whisper)
+      let transcription = subtitles.map(s => s.text).join(' ');
+      
+      if (!subtitles || subtitles.length === 0) {
+        setStatus('No subtitles found. Using speech-to-text...');
+        const whisperResponse = await axios.post('/api/whisper', {
+          url: videoUrl,
+        });
+        transcription = whisperResponse.data.text;
+      }
+
+      setProgress(60);
       setStatus('Translating to Myanmar...');
 
-      // Step 2: Translate to Myanmar
+      // Step 3: Translate to Myanmar
       const translateResponse = await axios.post('/api/convert-to-speech', {
-        text: transcriptResponse.data.text,
+        text: transcription,
         targetLanguage: 'Myanmar',
         voice: 'translate'
       });
 
-      const translatedText = translateResponse.data.translatedText || transcriptResponse.data.text;
+      const translatedText = translateResponse.data.translatedText || transcription;
 
-      setProgress(60);
+      setProgress(75);
       setStatus('Generating Myanmar SRT...');
 
-      // Step 3: Generate SRT files
-      const segments = transcriptResponse.data.segments || [];
+      // Step 4: Generate SRT files
+      let englishSrt = '';
+      let myanmarSrt = '';
       
-      const englishSrt = segments.map((seg, i) => 
-        `${i + 1}\n${formatTime(seg.start)} --> ${formatTime(seg.end)}\n${seg.text}`
-      ).join('\n\n');
+      if (subtitles && subtitles.length > 0) {
+        englishSrt = subtitles.map((sub, i) => {
+          const startTime = formatSrtTime(sub.start || i * 3);
+          const endTime = formatSrtTime(sub.start + (sub.duration || 3));
+          return `${i + 1}\n${startTime} --> ${endTime}\n${sub.text}`;
+        }).join('\n\n');
 
-      // For Myanmar SRT, we'll use the translated text
-      const myanmarSrt = englishSrt; // Replace with translated segments if available
+        // Generate Myanmar SRT with same timing
+        const translatedSegments = translatedText.split(/[.!?]+/).filter(s => s.trim());
+        myanmarSrt = subtitles.map((sub, i) => {
+          const startTime = formatSrtTime(sub.start || i * 3);
+          const endTime = formatSrtTime(sub.start + (sub.duration || 3));
+          const translatedTextForSub = translatedSegments[i] || sub.text;
+          return `${i + 1}\n${startTime} --> ${endTime}\n${translatedTextForSub.trim()}`;
+        }).join('\n\n');
+      } else {
+        // Create SRT from transcription
+        const words = transcription.split(' ');
+        const segmentDuration = 5; // 5 seconds per segment
+        englishSrt = words.reduce((acc, word, i) => {
+          const segmentIndex = Math.floor(i / 10);
+          const startTime = formatSrtTime(segmentIndex * segmentDuration);
+          const endTime = formatSrtTime((segmentIndex + 1) * segmentDuration);
+          if (!acc[segmentIndex]) acc[segmentIndex] = [];
+          acc[segmentIndex].push(word);
+          return acc;
+        }, []).map((words, i) => `${i + 1}\n${formatSrtTime(i * segmentDuration)} --> ${formatSrtTime((i + 1) * segmentDuration)}\n${words.join(' ')}`).join('\n\n');
 
-      setProgress(80);
-      setStatus('Generating Myanmar voiceover...');
+        const myanmarWords = translatedText.split(' ');
+        myanmarSrt = myanmarWords.reduce((acc, word, i) => {
+          const segmentIndex = Math.floor(i / 10);
+          if (!acc[segmentIndex]) acc[segmentIndex] = [];
+          acc[segmentIndex].push(word);
+          return acc;
+        }, []).map((words, i) => `${i + 1}\n${formatSrtTime(i * segmentDuration)} --> ${formatSrtTime((i + 1) * segmentDuration)}\n${words.join(' ')}`).join('\n\n');
+      }
 
-      // Step 4: TTS
+      setProgress(85);
+      setStatus('Generating Myanmar voiceover MP3...');
+
+      // Step 5: TTS - Generate MP3
       let audioUrl = null;
       let hasAudio = false;
 
@@ -96,14 +146,15 @@ export default function DashboardPage() {
       setStatus('Done!');
 
       setResults({
-        transcription: transcriptResponse.data.text,
-        translatedText: translatedText,
-        englishSrt: englishSrt,
-        myanmarSrt: myanmarSrt,
+        videoUrl,
+        transcription,
+        translatedText,
+        englishSrt,
+        myanmarSrt,
         audio: audioUrl,
         hasAudio,
-        subtitleCount: segments.length,
-        message: 'Audio successfully transcribed and processed!',
+        subtitleCount: subtitles?.length || 0,
+        message: 'Video processed successfully!',
       });
 
     } catch (err) {
@@ -114,18 +165,37 @@ export default function DashboardPage() {
   };
 
   const handleDownload = (type) => {
-    const content = type === 'myanmar' ? results.myanmarSrt : results.englishSrt;
+    let content, filename;
+    
+    if (type === 'myanmar') {
+      content = results.myanmarSrt;
+      filename = 'myanmar-subtitles.srt';
+    } else if (type === 'english') {
+      content = results.englishSrt;
+      filename = 'english-subtitles.srt';
+    } else if (type === 'mp3') {
+      // Download MP3
+      if (results.audio) {
+        const a = document.createElement('a');
+        a.href = results.audio;
+        a.download = 'myanmar-voiceover.mp3';
+        a.click();
+        return;
+      }
+      return;
+    }
+    
     if (!content) return;
     const blob = new Blob([content], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = type === 'myanmar' ? 'myanmar-subtitles.srt' : 'english-subtitles.srt';
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  const formatTime = (seconds) => {
+  const formatSrtTime = (seconds) => {
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
     const s = Math.floor(seconds % 60);
@@ -134,7 +204,7 @@ export default function DashboardPage() {
   };
 
   const handleReset = () => {
-    setAudioFile(null);
+    setVideoUrl('');
     setResults(null);
     setError(null);
     setProgress(0);
@@ -144,41 +214,65 @@ export default function DashboardPage() {
   return (
     <div className="max-w-4xl mx-auto py-10">
       <h1 className="text-3xl font-bold mb-2">Movie Recap Auto</h1>
-      <p className="text-muted-foreground mb-6">Upload audio → Speech to Text → Myanmar Translation → Myanmar Voiceover</p>
+      <p className="text-muted-foreground mb-6">YouTube/TikTok URL → Speech to Text → Myanmar Translation → Myanmar MP3 Voiceover</p>
       
       {!results ? (
         <Card>
           <CardHeader>
-            <CardTitle>Upload Audio File</CardTitle>
+            <CardTitle>Enter Video URL</CardTitle>
             <CardDescription>
-              Upload an audio file to transcribe, translate to Myanmar, and generate voiceover
+              Paste a YouTube or TikTok video link to extract subtitles, translate to Myanmar, and generate MP3 voiceover
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <div 
-              className="border-2 border-dashed border-purple-300 dark:border-purple-700 rounded-lg p-12 text-center cursor-pointer hover:border-purple-400 transition-colors"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac"
-                onChange={handleAudioUpload}
-                className="hidden"
-              />
-              <Upload className="h-16 w-16 mx-auto text-purple-400 mb-4" />
-              <p className="text-xl font-medium">Click to upload audio file</p>
-              <p className="text-sm text-muted-foreground mt-2">MP3, WAV, M4A, OGG, FLAC supported</p>
-              {audioFile && (
-                <p className="mt-4 text-purple-600 font-medium">{audioFile.name}</p>
-              )}
+            <div className="space-y-4">
+              <div className="flex gap-4">
+                <div className="flex-1 relative">
+                  <Link className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
+                  <Input
+                    type="url"
+                    placeholder="https://www.youtube.com/watch?v=... or https://www.tiktok.com/..."
+                    value={videoUrl}
+                    onChange={(e) => setVideoUrl(e.target.value)}
+                    className="pl-10"
+                    disabled={isProcessing}
+                  />
+                </div>
+                <Button 
+                  onClick={handleProcessVideo} 
+                  disabled={isProcessing || !videoUrl.trim()}
+                  className="gap-2"
+                >
+                  {isProcessing ? (
+                    <>
+                      <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                      Processing...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="h-4 w-4" />
+                      Process
+                    </>
+                  )}
+                </Button>
+              </div>
+
+              {/* Platform Icons */}
+              <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                <span className="flex items-center gap-1">
+                  <span className="text-red-500">●</span> YouTube
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="text-black">●</span> TikTok
+                </span>
+              </div>
             </div>
 
             {isProcessing && (
               <div className="mt-8">
                 <div className="flex items-center justify-center gap-2 mb-4">
-                  <Mic className="h-5 w-5 text-purple-600 animate-pulse" />
-                  <span className="font-medium text-purple-600">{status}</span>
+                  <Mic className="h-5 w-5 text-primary animate-pulse" />
+                  <span className="font-medium">{status}</span>
                 </div>
                 <LoadingAnimation message="" />
                 <div className="mt-6">
@@ -188,9 +282,12 @@ export default function DashboardPage() {
             )}
 
             {error && (
-              <div className="mt-6 p-4 bg-destructive/10 text-destructive rounded-lg border border-destructive/20">
-                <p className="font-medium">Error</p>
-                <p className="text-sm mt-1">{error}</p>
+              <div className="mt-6 p-4 bg-destructive/10 text-destructive rounded-lg border border-destructive/20 flex items-start gap-2">
+                <AlertCircle className="h-5 w-5 mt-0.5 flex-shrink-0" />
+                <div>
+                  <p className="font-medium">Error</p>
+                  <p className="text-sm mt-1">{error}</p>
+                </div>
               </div>
             )}
           </CardContent>
@@ -199,27 +296,33 @@ export default function DashboardPage() {
         <div className="space-y-6">
           <Card>
             <CardHeader>
-              <div className="flex justify-between items-center">
+              <div className="flex justify-between items-center flex-wrap gap-4">
                 <div>
-                  <CardTitle>Processing Complete!</CardTitle>
-                  <CardDescription>{results.subtitleCount} segments • Audio transcribed successfully</CardDescription>
+                  <CardTitle>Processing Complete! 🎉</CardTitle>
+                  <CardDescription>{results.subtitleCount} subtitle segments extracted</CardDescription>
                 </div>
                 <Button variant="outline" onClick={handleReset}>
-                  Process New Audio
+                  Process New Video
                 </Button>
               </div>
             </CardHeader>
+            {results.videoUrl && (
+              <CardContent>
+                <p className="text-sm text-muted-foreground">Source: {results.videoUrl}</p>
+              </CardContent>
+            )}
           </Card>
 
+          {/* Original Transcription */}
           <Card>
             <CardHeader>
               <div className="flex items-center gap-2">
-                <Mic className="h-5 w-5 text-purple-600" />
+                <Mic className="h-5 w-5 text-primary" />
                 <CardTitle>Original Transcription</CardTitle>
               </div>
             </CardHeader>
             <CardContent>
-              <p className="text-sm mb-4 whitespace-pre-wrap">{results.transcription}</p>
+              <p className="text-sm mb-4 whitespace-pre-wrap bg-muted p-4 rounded-lg">{results.transcription}</p>
               <Button variant="outline" size="sm" onClick={() => handleDownload('english')}>
                 <Download className="mr-2 h-4 w-4" />
                 Download English SRT
@@ -227,16 +330,17 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
 
-          <Card className="border-purple-200 dark:border-purple-800">
+          {/* Myanmar Translation */}
+          <Card className="border-primary/20">
             <CardHeader>
               <div className="flex items-center gap-2">
-                <Languages className="h-5 w-5 text-purple-600" />
-                <CardTitle>Myanmar Translation</CardTitle>
+                <Languages className="h-5 w-5 text-primary" />
+                <CardTitle>Myanmar Translation (မြန်မာဘာသာပြန်)</CardTitle>
               </div>
             </CardHeader>
             <CardContent>
-              <p className="text-sm mb-4 font-myanmar whitespace-pre-wrap">{results.translatedText}</p>
-              <pre className="bg-muted p-4 rounded-lg overflow-auto max-h-64 text-sm font-myanmar">
+              <p className="text-sm mb-4 whitespace-pre-wrap bg-muted p-4 rounded-lg">{results.translatedText}</p>
+              <pre className="bg-muted p-4 rounded-lg overflow-auto max-h-64 text-sm">
                 {results.myanmarSrt}
               </pre>
               <Button className="mt-4" size="sm" onClick={() => handleDownload('myanmar')}>
@@ -246,20 +350,25 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
 
+          {/* Myanmar Voiceover MP3 */}
           {results.hasAudio && results.audio && (
-            <Card className="border-purple-200 dark:border-purple-800">
+            <Card className="border-primary/20">
               <CardHeader>
                 <div className="flex items-center gap-2">
-                  <Volume2 className="h-5 w-5 text-purple-600" />
-                  <CardTitle>Myanmar Voiceover</CardTitle>
+                  <Volume2 className="h-5 w-5 text-primary" />
+                  <CardTitle>Myanmar Voiceover MP3 (မြန်မာစကားပြော)</CardTitle>
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="bg-purple-50 dark:bg-purple-950/30 p-6 rounded-lg">
+                <div className="bg-muted p-6 rounded-lg">
                   <audio controls className="w-full" src={results.audio}>
                     Your browser does not support the audio element.
                   </audio>
                 </div>
+                <Button className="mt-4" onClick={() => handleDownload('mp3')}>
+                  <Download className="mr-2 h-4 w-4" />
+                  Download MP3
+                </Button>
               </CardContent>
             </Card>
           )}
