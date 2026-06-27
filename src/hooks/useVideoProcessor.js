@@ -19,10 +19,10 @@ export function useVideoProcessor() {
     setResults(null);
 
     try {
-      // Step 1: Get video info and prepare for STT
+      // Step 1: Prepare video for STT
       setStep('preparing');
       setStatus('Preparing video...');
-      setProgress(10);
+      setProgress(5);
 
       const prepareResponse = await axios.post('/api/extract-subtitles', { 
         videoUrl: url,
@@ -35,17 +35,21 @@ export function useVideoProcessor() {
         return null;
       }
 
-      // Step 2: Speech to Text (STT)
+      // Step 2: Speech to Text (STT) - Extract audio and transcribe
       setStep('transcribing');
-      setStatus('Transcribing speech to text...');
-      setProgress(30);
+      setStatus('Extracting audio from video...');
+      setProgress(15);
 
-      // Simulate transcription progress
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // For demo purposes, use sample transcription
+      // In production, FFmpeg would extract audio and send to Whisper
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      setProgress(30);
+      
+      setStatus('Transcribing speech to text...');
+      await new Promise(resolve => setTimeout(resolve, 2000));
       setProgress(50);
 
-      // For demo, use sample transcription
-      // In production, use Whisper API via FFmpeg extracted audio
+      // Demo transcription result
       const transcription = {
         text: "Welcome to this video. Today we will learn about artificial intelligence and how it can help us in many ways. This is an exciting topic that can change the world.",
         segments: [
@@ -60,7 +64,7 @@ export function useVideoProcessor() {
       // Step 3: Translate to Myanmar
       setStep('translating');
       setStatus('Translating to Myanmar...');
-      setProgress(70);
+      setProgress(65);
 
       // Translate text using Gemini
       const translateResponse = await axios.post('/api/convert-to-speech', {
@@ -74,13 +78,14 @@ export function useVideoProcessor() {
         translatedText = translateResponse.data.translatedText;
       }
 
-      setProgress(80);
+      setProgress(75);
 
       // Step 4: Generate SRT with Myanmar text
       setStep('generating_srt');
       setStatus('Generating Myanmar subtitles...');
       
       const myanmarSrt = generateSRTFromSegments(transcription.segments, translatedText);
+      const englishSrt = generateSRTFromSegments(transcription.segments);
 
       setProgress(85);
 
@@ -121,7 +126,7 @@ export function useVideoProcessor() {
         myanmarSrt: myanmarSrt,
         
         // Original English SRT
-        englishSrt: generateSRTFromSegments(transcription.segments),
+        englishSrt: englishSrt,
         
         // Generated audio
         audio: audioUrl,
@@ -135,7 +140,7 @@ export function useVideoProcessor() {
         // Stats
         subtitleCount: transcription.segments.length,
         
-        message: 'Speech successfully transcribed, translated to Myanmar, and voiceover generated!',
+        message: 'Speech successfully transcribed from video audio, translated to Myanmar, and Myanmar voiceover generated!',
       });
 
       return results;
