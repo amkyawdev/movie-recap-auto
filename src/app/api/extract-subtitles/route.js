@@ -237,7 +237,7 @@ async function translateSRT(srt, targetLanguage, apiKey) {
             'X-Title': 'Movie Recap Auto',
           },
           body: JSON.stringify({
-            model: 'google/gemini-2.0-flash-thinking-exp-01-21',
+            model: 'google/gemini-2.5-pro',
             messages: [
               {
                 role: 'user',
