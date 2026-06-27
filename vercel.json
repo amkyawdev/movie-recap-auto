@@ -1,25 +1,9 @@
 {
-  // Vercel Deployment Configuration
-  // https://vercel.com/docs/concepts/deployments/configuration
-
-  // ============================================
-  // BUILD SETTINGS
-  // ============================================
   "buildCommand": "npm run build",
-  
-  // Output directory - where the build files are located
   "outputDirectory": ".next",
-
-  // Install command - dependencies installation
   "installCommand": "npm install",
-
-  // Framework detection
   "framework": "nextjs",
-
-  // Deployment region
   "regions": ["iad1"],
-
-  // Environment variables (set in Vercel Dashboard)
   "env": {
     "NEXT_PUBLIC_SITE_URL": "@NEXT_PUBLIC_SITE_URL",
     "OPENROUTER_API_KEY": "@OPENROUTER_API_KEY"
