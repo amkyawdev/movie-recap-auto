@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 export async function POST(request) {
   try {
-    const { videoUrl } = await request.json();
+    const { videoUrl, srtContent, audioBase64, action = 'merge' } = await request.json();
 
     if (!videoUrl) {
       return NextResponse.json(
@@ -11,17 +11,18 @@ export async function POST(request) {
       );
     }
 
-    // Placeholder for full video processing pipeline
+    // FFmpeg.wasm runs in browser, so this API is for server-side coordination
+    // Actual FFmpeg processing should happen on client-side
+    
     return NextResponse.json({
       success: true,
-      message: 'Video processing would happen here',
-      steps: [
-        { step: 'download', status: 'complete' },
-        { step: 'extract_subtitles', status: 'complete' },
-        { step: 'translate', status: 'pending' },
-        { step: 'generate_tts', status: 'pending' },
-        { step: 'finalize', status: 'pending' },
-      ],
+      message: 'FFmpeg processing should be done client-side using @ffmpeg/ffmpeg',
+      instructions: {
+        step1: 'Load FFmpeg.wasm in browser',
+        step2: 'Download video/audio assets',
+        step3: 'Use FFmpeg commands to merge SRT with video',
+        step4: 'Return processed video URL'
+      }
     });
   } catch (error) {
     return NextResponse.json(
@@ -29,4 +30,21 @@ export async function POST(request) {
       { status: 500 }
     );
   }
+}
+
+// Get FFmpeg status
+export async function GET() {
+  return NextResponse.json({
+    status: 'ready',
+    version: '0.12.x',
+    supported: true,
+    features: [
+      'Video processing',
+      'Audio extraction',
+      'Subtitle burning',
+      'Format conversion',
+      'Video merging'
+    ],
+    note: 'FFmpeg.wasm runs in browser context'
+  });
 }

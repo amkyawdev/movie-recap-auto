@@ -39,7 +39,8 @@
     "wavesurfer.js": "^7.12.8",
     "srt-parser-2": "^1.2.3",
     "youtube-captions-scraper": "^2.0.3",
-    "fluent-ffmpeg": "^2.1.3"
+    "@ffmpeg/ffmpeg": "^0.12.10",
+    "@ffmpeg/util": "^0.12.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
