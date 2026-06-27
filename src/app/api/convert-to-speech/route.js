@@ -11,27 +11,70 @@ export async function POST(request) {
       );
     }
 
+    // Determine if this is a translation request
+    const isTranslation = voice === 'translate';
+    
     // Extract text from SRT if SRT content is provided
-    let textToSpeak = text || '';
+    let textToProcess = text || '';
     
     if (srtContent) {
       const lines = srtContent.split('\n');
       for (const line of lines) {
-        // Skip empty lines, numbers, and time codes
         if (line.trim() && !/^\d+$/.test(line.trim()) && !line.includes('-->')) {
-          textToSpeak += line.trim() + ' ';
+          textToProcess += line.trim() + ' ';
         }
       }
-      textToSpeak = textToSpeak.trim();
+      textToProcess = textToProcess.trim();
     }
 
-    // Generate speech using OpenRouter TTS
+    // Handle translation
+    if (isTranslation && process.env.OPENROUTER_API_KEY && textToProcess) {
+      try {
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
+            'X-Title': 'Movie Recap Auto',
+          },
+          body: JSON.stringify({
+            model: 'google/gemini-2.5-pro',
+            messages: [
+              {
+                role: 'user',
+                content: `Translate the following text to ${targetLanguage}. Only return the translated text, nothing else:\n\n${textToProcess}`
+              }
+            ]
+          })
+        });
+        
+        const data = await response.json();
+        const translatedText = data.choices?.[0]?.message?.content?.trim() || textToProcess;
+        
+        return NextResponse.json({
+          success: true,
+          translatedText,
+          originalText: textToProcess,
+          targetLanguage,
+          message: 'Translation completed',
+        });
+      } catch (e) {
+        console.log('Translation failed:', e.message);
+        return NextResponse.json({
+          success: false,
+          error: 'Translation failed',
+        }, { status: 500 });
+      }
+    }
+
+    // Handle TTS generation
     let audioBase64 = '';
     let ttsSuccess = false;
 
-    if (process.env.OPENROUTER_API_KEY && textToSpeak) {
+    if (process.env.OPENROUTER_API_KEY && textToProcess) {
       try {
-        // Use OpenRouter's audio/speech endpoint with Google TTS
+        // Use Google TTS
         const response = await fetch('https://openrouter.ai/api/v1/audio/speech', {
           method: 'POST',
           headers: {
@@ -42,7 +85,7 @@ export async function POST(request) {
           },
           body: JSON.stringify({
             model: 'google/gemini-2.0-flash-exp',
-            input: textToSpeak,
+            input: textToProcess,
             voice: mapGoogleVoice(voice, targetLanguage),
           })
         });
@@ -52,7 +95,7 @@ export async function POST(request) {
           audioBase64 = Buffer.from(buffer).toString('base64');
           ttsSuccess = true;
         } else {
-          // Fallback to OpenAI TTS if Google TTS fails
+          // Fallback to OpenAI TTS
           const fallbackResponse = await fetch('https://openrouter.ai/api/v1/audio/speech', {
             method: 'POST',
             headers: {
@@ -61,7 +104,7 @@ export async function POST(request) {
             },
             body: JSON.stringify({
               model: 'openai/tts-1',
-              input: textToSpeak,
+              input: textToProcess,
               voice: mapVoice(voice),
             })
           });
@@ -81,7 +124,7 @@ export async function POST(request) {
       success: true,
       audio: audioBase64,
       hasAudio: ttsSuccess,
-      text: textToSpeak,
+      text: textToProcess,
       voice,
       message: ttsSuccess ? 'TTS generated successfully' : 'TTS not available - add OPENROUTER_API_KEY',
     });
@@ -102,14 +145,12 @@ function mapVoice(voice) {
     'onyx': 'onyx',
     'nova': 'nova',
     'shimmer': 'shimmer',
-    // Default to alloy if unknown
   };
   return voiceMap[voice?.toLowerCase()] || 'alloy';
 }
 
 // Map voice for Google TTS
 function mapGoogleVoice(voice, targetLanguage) {
-  // Google TTS voices based on language
   const googleVoices = {
     'myanmar': {
       'male': 'my-MM-Standard-A',
@@ -125,13 +166,11 @@ function mapGoogleVoice(voice, targetLanguage) {
     }
   };
   
-  // Map input voice to gender
   const maleVoices = ['echo', 'onyx', 'fable'];
   const gender = maleVoices.includes(voice?.toLowerCase()) ? 'male' : 'female';
   
-  // Get language key
   let langKey = 'default';
-  if (targetLanguage?.toLowerCase().includes('myanmar') || targetLanguage?.toLowerCase().includes('burmese')) {
+  if (targetLanguage?.toLowerCase().includes('myanmar')) {
     langKey = 'myanmar';
   } else if (targetLanguage?.toLowerCase().includes('english')) {
     langKey = 'english';

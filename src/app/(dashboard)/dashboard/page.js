@@ -6,37 +6,52 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Input } from '@/components/ui/input';
 import { useVideoProcessor } from '@/hooks/useVideoProcessor';
 import { LoadingAnimation, WaveProgress } from '@/components/shared/LoadingAnimation';
-import { Link2, Play, Download, Volume2, Languages } from 'lucide-react';
+import { Link2, Play, Download, Volume2, Languages, Mic, FileText } from 'lucide-react';
 
 export default function DashboardPage() {
   const [videoUrl, setVideoUrl] = useState('');
-  const { isProcessing, progress, status, results, error, processVideo, reset } = useVideoProcessor();
+  const { isProcessing, progress, status, step, results, error, processVideo, reset } = useVideoProcessor();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!videoUrl) return;
-    await processVideo(videoUrl, { translate: true, targetLanguage: 'Myanmar' });
+    await processVideo(videoUrl, { targetLanguage: 'Myanmar' });
   };
 
-  const handleDownloadSRT = () => {
-    if (!results?.srt) return;
-    const blob = new Blob([results.srt], { type: 'text/plain' });
+  const handleDownloadSRT = (type) => {
+    const content = type === 'myanmar' ? results.myanmarSrt : results.englishSrt;
+    if (!content) return;
+    const blob = new Blob([content], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'subtitles.srt';
+    a.download = type === 'myanmar' ? 'subtitles-myanmar.srt' : 'subtitles-english.srt';
     a.click();
     URL.revokeObjectURL(url);
   };
 
+  const getStepLabel = () => {
+    const steps = {
+      preparing: '1. Preparing',
+      transcribing: '2. Speech to Text',
+      translating: '3. Translating to Myanmar',
+      generating_srt: '4. Generating SRT',
+      tts: '5. Myanmar Voiceover',
+      complete: 'Complete!',
+      error: 'Error',
+    };
+    return steps[step] || status;
+  };
+
   return (
     <div className="max-w-4xl mx-auto py-10">
-      <h1 className="text-3xl font-bold mb-8">Dashboard</h1>
+      <h1 className="text-3xl font-bold mb-8">Movie Recap Auto</h1>
+      <p className="text-muted-foreground mb-6">Speech to Text → Myanmar Translation → Myanmar Voiceover</p>
       
       <Card className="mb-8">
         <CardHeader>
           <CardTitle>Process Video</CardTitle>
-          <CardDescription>Enter a YouTube URL to extract subtitles and generate Myanmar voiceover</CardDescription>
+          <CardDescription>Enter a YouTube URL to extract speech, translate to Myanmar, and generate Myanmar voiceover</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -60,6 +75,10 @@ export default function DashboardPage() {
 
             {isProcessing && (
               <div className="py-6">
+                <div className="flex items-center justify-center gap-2 mb-4">
+                  <Mic className="h-5 w-5 text-purple-600" />
+                  <span className="font-medium text-purple-600">{getStepLabel()}</span>
+                </div>
                 <LoadingAnimation message={status} />
                 <div className="mt-6">
                   <WaveProgress progress={progress} status="" />
@@ -78,66 +97,104 @@ export default function DashboardPage() {
       </Card>
 
       {results && (
-        <Card>
-          <CardHeader>
-            <div className="flex justify-between items-center">
-              <div>
-                <CardTitle>Results</CardTitle>
-                <CardDescription>
-                  {results.subtitleCount} subtitles extracted from {results.platform}
-                </CardDescription>
-              </div>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={handleDownloadSRT}>
-                  <Download className="mr-2 h-4 w-4" />
-                  Download SRT
-                </Button>
-                <Button variant="outline" size="sm" onClick={reset}>
+        <div className="space-y-6">
+          {/* Results Summary */}
+          <Card>
+            <CardHeader>
+              <div className="flex justify-between items-center">
+                <div>
+                  <CardTitle>Processing Complete!</CardTitle>
+                  <CardDescription>{results.subtitleCount} segments processed</CardDescription>
+                </div>
+                <Button variant="outline" onClick={reset}>
                   New Video
                 </Button>
               </div>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {/* Video Preview */}
-              {results.videoId && results.platform === 'youtube' && (
-                <div className="aspect-video bg-black rounded-lg overflow-hidden mb-4">
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">{results.message}</p>
+            </CardContent>
+          </Card>
+
+          {/* Video Preview */}
+          {results.videoId && results.platform === 'youtube' && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Video</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="aspect-video bg-black rounded-lg overflow-hidden">
                   <iframe
                     src={`https://www.youtube.com/embed/${results.videoId}`}
                     className="w-full h-full"
                     allowFullScreen
                   />
                 </div>
-              )}
+              </CardContent>
+            </Card>
+          )}
 
-              {/* Audio Player */}
-              {results.hasAudio && results.audio && (
+          {/* Original Transcription */}
+          <Card>
+            <CardHeader>
+              <div className="flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  <Mic className="h-5 w-5 text-purple-600" />
+                  <CardTitle>Original Speech (English)</CardTitle>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm mb-4">{results.transcription}</p>
+              <Button variant="outline" size="sm" onClick={() => handleDownloadSRT('english')}>
+                <Download className="mr-2 h-4 w-4" />
+                Download English SRT
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* Myanmar Translation */}
+          <Card className="border-purple-200 dark:border-purple-800">
+            <CardHeader>
+              <div className="flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  <Languages className="h-5 w-5 text-purple-600" />
+                  <CardTitle>Myanmar Translation</CardTitle>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => handleDownloadSRT('myanmar')}>
+                  <Download className="mr-2 h-4 w-4" />
+                  Download Myanmar SRT
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm mb-4 font-myanmar">{results.translatedText}</p>
+              <pre className="bg-muted p-4 rounded-lg overflow-auto max-h-64 text-sm font-myanmar">
+                {results.myanmarSrt}
+              </pre>
+            </CardContent>
+          </Card>
+
+          {/* Myanmar Voiceover */}
+          {results.hasAudio && results.audio && (
+            <Card className="border-purple-200 dark:border-purple-800">
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <Volume2 className="h-5 w-5 text-purple-600" />
+                  <CardTitle>Myanmar Voiceover</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent>
                 <div className="bg-purple-50 dark:bg-purple-950/30 p-4 rounded-lg">
-                  <div className="flex items-center gap-3 mb-3">
-                    <Volume2 className="h-5 w-5 text-purple-600" />
-                    <span className="font-medium text-purple-600 dark:text-purple-400">Generated Voiceover</span>
-                  </div>
                   <audio controls className="w-full">
                     <source src={results.audio} type="audio/mpeg" />
                     Your browser does not support the audio element.
                   </audio>
                 </div>
-              )}
-
-              {/* Subtitle Preview */}
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <Languages className="h-4 w-4 text-purple-600" />
-                  <span className="font-medium">Subtitles (Myanmar)</span>
-                </div>
-                <pre className="bg-muted p-4 rounded-lg overflow-auto max-h-96 text-sm">
-                  {results.srt}
-                </pre>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+              </CardContent>
+            </Card>
+          )}
+        </div>
       )}
     </div>
   );
