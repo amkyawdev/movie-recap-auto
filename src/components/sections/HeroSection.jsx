@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Play, Sparkles, Languages, Volume2 } from 'lucide-react';
+import Link from 'next/link';
 
 export function HeroSection() {
   return (
@@ -43,14 +44,18 @@ export function HeroSection() {
             transition={{ duration: 0.5, delay: 0.2 }}
             className="flex flex-col sm:flex-row gap-4 justify-center mb-16"
           >
-            <Button size="lg" className="gap-2">
-              <Play className="h-4 w-4" />
-              Get Started
-            </Button>
-            <Button size="lg" variant="outline" className="gap-2">
-              <Sparkles className="h-4 w-4" />
-              View Demo
-            </Button>
+            <Link href="/dashboard">
+              <Button size="lg" className="gap-2">
+                <Play className="h-4 w-4" />
+                Get Started
+              </Button>
+            </Link>
+            <Link href="/dashboard">
+              <Button size="lg" variant="outline" className="gap-2">
+                <Sparkles className="h-4 w-4" />
+                View Demo
+              </Button>
+            </Link>
           </motion.div>
 
           {/* Feature Cards */}
