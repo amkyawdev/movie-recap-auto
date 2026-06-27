@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-// Dynamic import to handle ES modules
+// Dynamic import for ES modules
 async function getYouTubeCaptions() {
   try {
     const module = await import('youtube-captions-scraper');
@@ -12,100 +12,197 @@ async function getYouTubeCaptions() {
 
 export async function POST(request) {
   try {
-    const { videoUrl, targetLanguage = 'Myanmar' } = await request.json();
+    const { url, targetLanguage = 'Myanmar' } = await request.json();
 
-    if (!videoUrl) {
+    if (!url) {
       return NextResponse.json(
         { success: false, error: 'Video URL is required' },
         { status: 400 }
       );
     }
 
-    // Detect platform
+    // Extract video ID
+    let videoId = '';
     let platform = 'unknown';
-    let extractedVideoId = '';
     
     // YouTube
-    if (videoUrl.includes('youtube.com') || videoUrl.includes('youtu.be')) {
+    if (url.includes('youtube.com') || url.includes('youtu.be')) {
       platform = 'youtube';
-      const match = videoUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/);
-      extractedVideoId = match ? match[1] : '';
+      const match = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/);
+      videoId = match ? match[1] : '';
     }
     // TikTok
-    else if (videoUrl.includes('tiktok.com')) {
+    else if (url.includes('tiktok.com')) {
       platform = 'tiktok';
-      const match = videoUrl.match(/video\/(\d+)/);
-      extractedVideoId = match ? match[1] : videoUrl.split('/').pop().split('?')[0];
+      const match = url.match(/video\/(\d+)/);
+      videoId = match ? match[1] : url.split('/').pop().split('?')[0];
     }
 
-    if (platform === 'unknown') {
+    if (platform === 'unknown' || !videoId) {
       return NextResponse.json({
         success: false,
         error: 'Unsupported video URL. Please use YouTube or TikTok URL.',
       });
     }
 
-    // Extract subtitles for YouTube
-    if (platform === 'youtube' && extractedVideoId) {
-      try {
-        const scraper = await getYouTubeCaptions();
-        
-        if (scraper && scraper.getSubtitles) {
-          // Try to get English subtitles first
-          let subtitles = [];
-          try {
-            const englishSubs = await scraper.getSubtitles({
-              videoID: extractedVideoId,
-              lang: 'en'
-            });
-            subtitles = englishSubs;
-          } catch (e) {
-            // Try auto-generated subtitles
-            try {
-              const autoSubs = await scraper.getSubtitles({
-                videoID: extractedVideoId,
-                lang: 'a.en'
-              });
-              subtitles = autoSubs;
-            } catch (e2) {
-              // No subtitles available
-            }
-          }
-
-          if (subtitles && subtitles.length > 0) {
-            return NextResponse.json({
-              success: true,
-              platform,
-              videoId: extractedVideoId,
-              subtitles: subtitles.map(sub => ({
-                text: sub.text,
-                start: sub.start,
-                duration: sub.dur || 3,
-              })),
-              originalLanguage: 'en',
-              message: 'Subtitles extracted successfully',
-            });
-          }
-        }
-      } catch (e) {
-        console.log('YouTube caption extraction error:', e.message);
+    // For YouTube - try to get subtitles/transcript
+    if (platform === 'youtube' && videoId) {
+      const subtitles = await getYouTubeSubtitles(videoId);
+      
+      if (subtitles && subtitles.length > 0) {
+        return NextResponse.json({
+          success: true,
+          platform,
+          videoId,
+          subtitles,
+          originalLanguage: 'en',
+          message: 'Subtitles extracted successfully',
+        });
       }
     }
 
-    // If no subtitles found or TikTok, return empty subtitles array
-    // The dashboard will use Whisper for speech-to-text instead
+    // For TikTok - use RapidAPI
+    if (platform === 'tiktok') {
+      const RAPIDAPI_KEY = process.env.TIKTOK_RAPIDAPI_KEY;
+      
+      if (RAPIDAPI_KEY) {
+        try {
+          const response = await fetch(
+            'https://tiktok-downloader-download-tiktok-videos-without-watermark.p.rapidapi.com/index?url=' + encodeURIComponent(url),
+            {
+              method: 'GET',
+              headers: {
+                'X-RapidAPI-Key': RAPIDAPI_KEY,
+                'X-RapidAPI-Host': 'tiktok-downloader-download-tiktok-videos-without-watermark.p.rapidapi.com'
+              }
+            }
+          );
+
+          if (response.ok) {
+            const data = await response.json();
+            const audioUrl = data.video || data.music || data.download_url || (Array.isArray(data) ? data[0] : null);
+            
+            if (audioUrl) {
+              return NextResponse.json({
+                success: true,
+                platform,
+                videoId,
+                audioUrl,
+                message: 'TikTok audio ready for transcription',
+              });
+            }
+          }
+        } catch (e) {
+          console.log('TikTok API error:', e.message);
+        }
+      }
+      
+      return NextResponse.json({
+        success: false,
+        error: 'TikTok requires RAPIDAPI_KEY. Please add TIKTOK_RAPIDAPI_KEY to environment variables.',
+        platform,
+        videoId,
+      }, { status: 500 });
+    }
+
+    // No subtitles found - return for Whisper processing
     return NextResponse.json({
-      success: true,
+      success: false,
+      error: 'No subtitles available. Please use a video with captions or add RAPIDAPI_KEY for TikTok.',
       platform,
-      videoId: extractedVideoId,
+      videoId,
       subtitles: [],
-      message: 'No subtitles available. Will use speech-to-text instead.',
-      useSpeechToText: true,
-    });
+    }, { status: 404 });
+
   } catch (error) {
     return NextResponse.json(
       { success: false, error: error.message || 'Internal server error' },
       { status: 500 }
     );
   }
+}
+
+// Get YouTube subtitles using multiple methods
+async function getYouTubeSubtitles(videoId) {
+  // Method 1: Try youtube-captions-scraper
+  try {
+    const scraper = await getYouTubeCaptions();
+    
+    if (scraper && scraper.getSubtitles) {
+      // Try English subtitles
+      try {
+        const subs = await scraper.getSubtitles({
+          videoID: videoId,
+          lang: 'en'
+        });
+        if (subs && subs.length > 0) {
+          return subs.map(sub => ({
+            text: sub.text,
+            start: sub.start,
+            duration: sub.dur || 3,
+          }));
+        }
+      } catch (e) {}
+      
+      // Try auto-generated subtitles
+      try {
+        const subs = await scraper.getSubtitles({
+          videoID: videoId,
+          lang: 'a.en'
+        });
+        if (subs && subs.length > 0) {
+          return subs.map(sub => ({
+            text: sub.text,
+            start: sub.start,
+            duration: sub.dur || 3,
+          }));
+        }
+      } catch (e) {}
+    }
+  } catch (e) {
+    console.log('Scraper error:', e.message);
+  }
+
+  // Method 2: Try direct YouTube transcript API
+  try {
+    const transcriptUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en`;
+    const response = await fetch(transcriptUrl, { timeout: 5000 });
+    
+    if (response.ok) {
+      const text = await response.text();
+      
+      if (text && text.includes('<text')) {
+        // Parse XML format subtitles
+        const subtitles = [];
+        const regex = /<text[^>]*start="([\d.]+)"[^>]*dur="([\d.]+)"[^>]*>([^<]+)<\/text>/g;
+        let match;
+        
+        while ((match = regex.exec(text)) !== null) {
+          subtitles.push({
+            start: parseFloat(match[1]),
+            duration: parseFloat(match[2]),
+            text: decodeHtmlEntities(match[3]),
+          });
+        }
+        
+        if (subtitles.length > 0) {
+          return subtitles;
+        }
+      }
+    }
+  } catch (e) {
+    console.log('Direct transcript error:', e.message);
+  }
+
+  return null;
+}
+
+function decodeHtmlEntities(text) {
+  return text
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ');
 }

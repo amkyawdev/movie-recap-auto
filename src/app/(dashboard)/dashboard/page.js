@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -16,8 +16,45 @@ export default function DashboardPage() {
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
 
-  const isValidUrl = (url) => {
-    return url.includes('youtube.com') || url.includes('youtu.be') || url.includes('tiktok.com');
+  const isYouTube = (url) => url.includes('youtube.com') || url.includes('youtu.be');
+  const isTikTok = (url) => url.includes('tiktok.com');
+  const isValidUrl = (url) => isYouTube(url) || isTikTok(url);
+
+  const downloadVideo = async (url) => {
+    setProgress(10);
+    setStatus('Downloading video...');
+
+    // Use RapidAPI for TikTok
+    if (isTikTok(url)) {
+      try {
+        const response = await axios.post('/api/tiktok-download', {
+          url: url,
+        });
+        
+        if (response.data.success && response.data.audioUrl) {
+          return response.data.audioUrl;
+        } else {
+          throw new Error(response.data.error || 'Failed to download TikTok video');
+        }
+      } catch (e) {
+        throw new Error(`TikTok download failed: ${e.response?.data?.error || e.message}`);
+      }
+    }
+    
+    // Use y2mate for YouTube (browser-compatible)
+    try {
+      const response = await axios.post('/api/youtube-download', {
+        url: url,
+      });
+      
+      if (response.data.success && response.data.audioUrl) {
+        return response.data.audioUrl;
+      }
+    } catch (e) {
+      console.log('YouTube API download failed:', e.message);
+    }
+    
+    throw new Error('Failed to download video. Please try again.');
   };
 
   const handleProcessVideo = async () => {
@@ -37,33 +74,46 @@ export default function DashboardPage() {
     setError(null);
 
     try {
-      // Step 1: Extract subtitles from video URL
+      // Step 1: Try to extract subtitles first
       setProgress(10);
-      setStatus('Extracting subtitles from video...');
+      setStatus('Extracting subtitles...');
 
-      const subtitleResponse = await axios.post('/api/extract-subtitles', {
-        url: videoUrl,
-      });
-
-      if (!subtitleResponse.data.success) {
-        throw new Error(subtitleResponse.data.error || 'Subtitle extraction failed');
-      }
-
-      const { subtitles, originalLanguage } = subtitleResponse.data;
-      setProgress(40);
-      setStatus('Transcribing to text...');
-
-      // Step 2: Transcribe (if no subtitles available, use Whisper)
-      let transcription = subtitles.map(s => s.text).join(' ');
-      
-      if (!subtitles || subtitles.length === 0) {
-        setStatus('No subtitles found. Using speech-to-text...');
-        const whisperResponse = await axios.post('/api/whisper', {
+      let subtitles = [];
+      try {
+        const subtitleResponse = await axios.post('/api/extract-subtitles', {
           url: videoUrl,
         });
-        transcription = whisperResponse.data.text;
+        
+        if (subtitleResponse.data.success && subtitleResponse.data.subtitles?.length > 0) {
+          subtitles = subtitleResponse.data.subtitles;
+        }
+      } catch (e) {
+        console.log('Subtitle extraction skipped:', e.message);
       }
 
+      // Step 2: Download video and transcribe with Whisper
+      setProgress(25);
+      
+      let audioUrl;
+      try {
+        audioUrl = await downloadVideo(videoUrl);
+      } catch (downloadError) {
+        throw new Error(downloadError.message);
+      }
+
+      setProgress(40);
+      setStatus('Transcribing audio with AI...');
+
+      // Transcribe the audio
+      const whisperResponse = await axios.post('/api/whisper', {
+        url: audioUrl,
+      });
+
+      if (!whisperResponse.data.success) {
+        throw new Error(whisperResponse.data.error || 'Transcription failed');
+      }
+
+      const transcription = whisperResponse.data.text || transcription;
       setProgress(60);
       setStatus('Translating to Myanmar...');
 
@@ -80,51 +130,59 @@ export default function DashboardPage() {
       setStatus('Generating Myanmar SRT...');
 
       // Step 4: Generate SRT files
+      const segments = whisperResponse.data.segments || [];
+      const segmentDuration = 5;
+
       let englishSrt = '';
       let myanmarSrt = '';
-      
-      if (subtitles && subtitles.length > 0) {
-        englishSrt = subtitles.map((sub, i) => {
-          const startTime = formatSrtTime(sub.start || i * 3);
-          const endTime = formatSrtTime(sub.start + (sub.duration || 3));
-          return `${i + 1}\n${startTime} --> ${endTime}\n${sub.text}`;
+
+      if (segments.length > 0) {
+        englishSrt = segments.map((seg, i) => {
+          const startTime = formatSrtTime(seg.start || i * segmentDuration);
+          const endTime = formatSrtTime(seg.end || (i + 1) * segmentDuration);
+          return `${i + 1}\n${startTime} --> ${endTime}\n${seg.text}`;
         }).join('\n\n');
 
-        // Generate Myanmar SRT with same timing
-        const translatedSegments = translatedText.split(/[.!?]+/).filter(s => s.trim());
-        myanmarSrt = subtitles.map((sub, i) => {
-          const startTime = formatSrtTime(sub.start || i * 3);
-          const endTime = formatSrtTime(sub.start + (sub.duration || 3));
-          const translatedTextForSub = translatedSegments[i] || sub.text;
-          return `${i + 1}\n${startTime} --> ${endTime}\n${translatedTextForSub.trim()}`;
+        // Create Myanmar SRT
+        const translatedWords = translatedText.split(' ');
+        const wordsPerSegment = Math.ceil(translatedWords.length / segments.length);
+        
+        myanmarSrt = segments.map((seg, i) => {
+          const startTime = formatSrtTime(seg.start || i * segmentDuration);
+          const endTime = formatSrtTime(seg.end || (i + 1) * segmentDuration);
+          const startIdx = i * wordsPerSegment;
+          const endIdx = Math.min(startIdx + wordsPerSegment, translatedWords.length);
+          const segmentText = translatedWords.slice(startIdx, endIdx).join(' ');
+          return `${i + 1}\n${startTime} --> ${endTime}\n${segmentText}`;
         }).join('\n\n');
       } else {
-        // Create SRT from transcription
+        // Fallback: simple SRT generation
         const words = transcription.split(' ');
-        const segmentDuration = 5; // 5 seconds per segment
-        englishSrt = words.reduce((acc, word, i) => {
-          const segmentIndex = Math.floor(i / 10);
-          const startTime = formatSrtTime(segmentIndex * segmentDuration);
-          const endTime = formatSrtTime((segmentIndex + 1) * segmentDuration);
-          if (!acc[segmentIndex]) acc[segmentIndex] = [];
-          acc[segmentIndex].push(word);
-          return acc;
-        }, []).map((words, i) => `${i + 1}\n${formatSrtTime(i * segmentDuration)} --> ${formatSrtTime((i + 1) * segmentDuration)}\n${words.join(' ')}`).join('\n\n');
-
-        const myanmarWords = translatedText.split(' ');
-        myanmarSrt = myanmarWords.reduce((acc, word, i) => {
-          const segmentIndex = Math.floor(i / 10);
-          if (!acc[segmentIndex]) acc[segmentIndex] = [];
-          acc[segmentIndex].push(word);
-          return acc;
-        }, []).map((words, i) => `${i + 1}\n${formatSrtTime(i * segmentDuration)} --> ${formatSrtTime((i + 1) * segmentDuration)}\n${words.join(' ')}`).join('\n\n');
+        const wordsPerSegment = 10;
+        
+        englishSrt = [];
+        myanmarSrt = [];
+        
+        for (let i = 0; i < words.length; i += wordsPerSegment) {
+          const engWords = words.slice(i, i + wordsPerSegment).join(' ');
+          const myaWords = translatedText.split(' ').slice(i, i + wordsPerSegment).join(' ');
+          const idx = Math.floor(i / wordsPerSegment) + 1;
+          const start = Math.floor(i / wordsPerSegment) * segmentDuration;
+          const end = start + segmentDuration;
+          
+          englishSrt.push(`${idx}\n${formatSrtTime(start)} --> ${formatSrtTime(end)}\n${engWords}`);
+          myanmarSrt.push(`${idx}\n${formatSrtTime(start)} --> ${formatSrtTime(end)}\n${myaWords}`);
+        }
+        
+        englishSrt = englishSrt.join('\n\n');
+        myanmarSrt = myanmarSrt.join('\n\n');
       }
 
       setProgress(85);
       setStatus('Generating Myanmar voiceover MP3...');
 
       // Step 5: TTS - Generate MP3
-      let audioUrl = null;
+      let audioResultUrl = null;
       let hasAudio = false;
 
       if (translatedText) {
@@ -137,7 +195,7 @@ export default function DashboardPage() {
         if (ttsResponse.data.hasAudio && ttsResponse.data.audio) {
           const response = await fetch(`data:audio/mp3;base64,${ttsResponse.data.audio}`);
           const blob = await response.blob();
-          audioUrl = URL.createObjectURL(blob);
+          audioResultUrl = URL.createObjectURL(blob);
           hasAudio = true;
         }
       }
@@ -147,13 +205,14 @@ export default function DashboardPage() {
 
       setResults({
         videoUrl,
+        platform: isYouTube(videoUrl) ? 'YouTube' : 'TikTok',
         transcription,
         translatedText,
         englishSrt,
         myanmarSrt,
-        audio: audioUrl,
+        audio: audioResultUrl,
         hasAudio,
-        subtitleCount: subtitles?.length || 0,
+        subtitleCount: segments.length,
         message: 'Video processed successfully!',
       });
 
@@ -174,7 +233,6 @@ export default function DashboardPage() {
       content = results.englishSrt;
       filename = 'english-subtitles.srt';
     } else if (type === 'mp3') {
-      // Download MP3
       if (results.audio) {
         const a = document.createElement('a');
         a.href = results.audio;
@@ -214,14 +272,14 @@ export default function DashboardPage() {
   return (
     <div className="max-w-4xl mx-auto py-10">
       <h1 className="text-3xl font-bold mb-2">Movie Recap Auto</h1>
-      <p className="text-muted-foreground mb-6">YouTube/TikTok URL → Speech to Text → Myanmar Translation → Myanmar MP3 Voiceover</p>
+      <p className="text-muted-foreground mb-6">YouTube/TikTok URL → Speech to Text → Myanmar Translation → Myanmar MP3</p>
       
       {!results ? (
         <Card>
           <CardHeader>
             <CardTitle>Enter Video URL</CardTitle>
             <CardDescription>
-              Paste a YouTube or TikTok video link to extract subtitles, translate to Myanmar, and generate MP3 voiceover
+              Paste a YouTube or TikTok video link to extract audio, transcribe, translate to Myanmar, and generate MP3
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -299,7 +357,9 @@ export default function DashboardPage() {
               <div className="flex justify-between items-center flex-wrap gap-4">
                 <div>
                   <CardTitle>Processing Complete! 🎉</CardTitle>
-                  <CardDescription>{results.subtitleCount} subtitle segments extracted</CardDescription>
+                  <CardDescription>
+                    {results.platform} • {results.subtitleCount} segments transcribed
+                  </CardDescription>
                 </div>
                 <Button variant="outline" onClick={handleReset}>
                   Process New Video
@@ -318,11 +378,13 @@ export default function DashboardPage() {
             <CardHeader>
               <div className="flex items-center gap-2">
                 <Mic className="h-5 w-5 text-primary" />
-                <CardTitle>Original Transcription</CardTitle>
+                <CardTitle>Original Transcription (English)</CardTitle>
               </div>
             </CardHeader>
             <CardContent>
-              <p className="text-sm mb-4 whitespace-pre-wrap bg-muted p-4 rounded-lg">{results.transcription}</p>
+              <p className="text-sm mb-4 whitespace-pre-wrap bg-muted p-4 rounded-lg max-h-48 overflow-auto">
+                {results.transcription}
+              </p>
               <Button variant="outline" size="sm" onClick={() => handleDownload('english')}>
                 <Download className="mr-2 h-4 w-4" />
                 Download English SRT
@@ -339,7 +401,9 @@ export default function DashboardPage() {
               </div>
             </CardHeader>
             <CardContent>
-              <p className="text-sm mb-4 whitespace-pre-wrap bg-muted p-4 rounded-lg">{results.translatedText}</p>
+              <p className="text-sm mb-4 whitespace-pre-wrap bg-muted p-4 rounded-lg max-h-48 overflow-auto">
+                {results.translatedText}
+              </p>
               <pre className="bg-muted p-4 rounded-lg overflow-auto max-h-64 text-sm">
                 {results.myanmarSrt}
               </pre>
